@@ -13,3 +13,10 @@ Revision history for Perl extension HTML::Sanitizer.
 		corrected with HTML::Entities within all text nodes
 	- "preserve_children" flag should work as expected now, with
 		no caveats
+
+0.03
+	- function names changed: s/filter_as/filter/ -- I reserve the
+		right to do this again until version 1 is released
+	- documentation fixes
+	- added support for HTML::Element element replacements
+	- allowed attribute subroutines access to the attr's value in $_

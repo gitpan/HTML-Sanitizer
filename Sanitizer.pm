@@ -6,9 +6,14 @@ use warnings;
 use Carp;
 use HTML::Entities;
 
-our $VERSION = 0.02;
+BEGIN {
+	our $VERSION = 0.03;
+	use constant DEBUG => 0;
 
-use constant DEBUG => 0;
+	if (DEBUG) {
+		use Data::Dumper;
+	}
+};
 
 sub debug { print STDERR @_ if DEBUG }
 
@@ -41,23 +46,29 @@ sub permit {
 
 	while (@_) {
 		my $element = shift;
-
 		my $attrs = shift;
 
 		$self->{_rules}->{$element} ||= {};
 
-		if (ref $attrs) {
+		if (UNIVERSAL::isa($attrs, "HTML::Element")) {
+			$self->{_rules}->{$element} = $attrs;
+		} 
+
+		elsif (ref $attrs) {
 			$attrs = array2hash($attrs);
 			foreach (keys %{$attrs}) {
 				$self->{_rules}->{$element}->{$_} = $attrs->{$_};
 			}
-		} elsif (defined $attrs) {
+		} 
+
+		elsif (defined $attrs) {
 			unshift(@_, $attrs);
 		}
 	}
 }
 
-sub deny {
+sub _deny {
+	my $with_what = shift;
 	my $self = shift;
 
 	while (@_) {
@@ -65,33 +76,46 @@ sub deny {
 		my $attrs = shift;
 
 		if (ref $attrs) {
+			croak "Attribute list for deny/ignore must be an arrayref" unless ref($attrs) eq 'ARRAY';
+
 			foreach (@{$attrs}) {
-				$self->{_rules}->{$element}->{$_} = 0;
+				$self->{_rules}->{$element}->{$_} = $with_what;
 			}
 			next;
-		} elsif (defined $attrs) {
+		} 
+		elsif (defined $attrs) {
 			unshift(@_, $attrs);
 		}
 
-		$self->{_rules}->{$element} = 0;
+		$self->{_rules}->{$element} = $with_what;
 	}
 }
 
+sub deny   { _deny(undef, @_); }
+sub ignore { _deny(0, @_); }
+	
 sub permit_only {
 	my $self = shift;
 
-	$self->{_rules}->{'*'} = 0;
+	$self->{_rules} = {'*' => undef};
 	$self->permit(@_);
 }
 
 sub deny_only {
 	my $self = shift;
 
-	$self->{_rules}->{'*'}->{'*'} = 1;
+	$self->{_rules} = {'*' => {'*' => 1 }};
 	$self->deny(@_);
 }
 
-sub filter_as_xml {
+sub ignore_only {
+	my $self = shift;
+
+	$self->{_rules} = {'*' => {'*' => 1 }};
+	$self->ignore(@_);
+}
+
+sub filter_xml {
 	my $self = (@_);
 	my $tree = &_filter;
 	return unless $tree;
@@ -99,7 +123,7 @@ sub filter_as_xml {
 	return $tree->as_XML;
 }
 
-sub filter_as_xml_fragment {
+sub filter_xml_fragment {
 	my $self = (@_);
 	my $tree = &_filter;
 	return unless $tree;
@@ -109,7 +133,7 @@ sub filter_as_xml_fragment {
 	return join("", map { ref() ? $_->as_XML : $_ } $body->content_list);
 }
 
-sub filter_as_html {
+sub filter_html {
 	my $self = (@_);
 	my $tree = &_filter;
 	return unless $tree;
@@ -117,7 +141,7 @@ sub filter_as_html {
 	return $tree->as_HTML;
 }
 
-sub filter_as_html_fragment {
+sub filter_html_fragment {
 	my $self = (@_);
 	my $tree = &_filter;
 	return unless $tree;
@@ -130,6 +154,10 @@ sub filter_as_html_fragment {
 sub _filter {
 	my $self = shift;
 	my $data = shift;
+
+	if (DEBUG) {
+		print STDERR "Filter: " . Dumper($self->{_rules}), "\n";
+	}
 
 	my $tree = new HTML::TreeBuilder;
 	#	$tree->p_strict(1);
@@ -161,53 +189,106 @@ sub sanitize_tree {
 			my $tag = lc $$child->tag;
 			debug "Examining tag $tag\n";
 
-			if ($rules->{$tag}) {
-				debug "  Tag has a rule\n";
-
-				$self->sanitize_attributes($$child);
-				if (ref($rules->{$tag}) eq 'CODE') {
-					unless ($rules->{$tag}->($$child)) {
-						next if $self->_filter_child($$child);
+			if (defined $rules->{$tag}) {
+				if ($rules->{$tag}) {
+	#				debug "  Tag has a rule: " . Dumper($rules->{$tag}) . "\n";
+	
+					$self->sanitize_attributes($$child);
+	
+					if (ref($rules->{$tag}) eq 'CODE') {
+						unless ($rules->{$tag}->($$child)) {
+							next if $self->_filter_child($$child);
+						}
 					}
-				}
-
-			} elsif ($rules->{'*'}) {
-				debug "  Tag has no rule, but there's a default rule\n";
-
-				$self->sanitize_attributes($$child);
-				if (ref($rules->{'*'}) eq 'CODE') {
-					unless ($rules->{'*'}->($$child)) {
-						next if $self->_filter_child($$child);
+	
+					elsif (ref($rules->{$tag}) eq 'HTML::Element') {
+						_replace_element($child, $rules->{$tag});
 					}
-				}
+	
+				} 
 
-			} else {
-				debug "  No rule found, defaulting to deny\n";
-				next if $self->_filter_child($$child);
+				else {
+					debug "  False rule found, bringing children up\n";
+					$self->sanitize_tree($_) for grep { ref } $$child->content_list;
+					$$child->replace_with_content->delete;
+				} 
+			} 
+			
+			elsif (!exists $rules->{$tag} && defined $rules->{'*'}) {
+				if ($rules->{'*'}) {
+					debug "  Tag has no rule, but there's a default rule\n";
+	
+					$self->sanitize_attributes($$child);
+					if (ref($rules->{'*'}) eq 'CODE') {
+						unless ($rules->{'*'}->($$child)) {
+							next if $self->_filter_child($$child);
+						}
+					}
+	
+					elsif (ref($rules->{'*'}) eq 'HTML::Element') {
+						_replace_element($child, $rules->{'*'});
+					}
+	
+				} 
+
+				else {
+					debug "  False default rule found, bringing children up\n";
+					$self->sanitize_tree($_) for grep { ref } $$child->content_list;
+					$$child->replace_with_content->delete;
+				} 
+			}
+	
+			else {
+				debug "  No/undef rule found, defaulting to deny\n";
+				$$child->delete;
+				next;
+				#next if $self->_filter_child($$child);
 			}
 
 			debug "  $tag is ok\n";	
 				
 			$self->sanitize_tree($$child) if $child;
-		} else {
+		} 
+		else {
 			$$child = encode_entities($$child);
 		}
 	}
 }
 
-sub _filter_child {
-	my ($self, $child) = @_;
+sub _replace_element {
+	my ($old, $rule) = @_;
 
-	debug "  filtering tag " . $child->tag . "\n";
-	if ($self->{preserve_children}) {
-		$self->sanitize_tree($_) for grep { ref } $child->content_list;
-		$child->replace_with_content->delete;
-		return 0;
-	} else {
-		$child->delete;
-		return 1;
+	my $new = $rule->clone;
+	debug "  $$old to be replaced by $new\n";
+	$new->push_content($$old->detach_content)
+		unless $new->content_list;
+
+	foreach ($$old->all_attr_names) {
+		$new->attr($_, $$old->attr($_)) unless defined($new->attr($_));
 	}
+
+	my @content = $new->content_list;
+	if (@content == 1 && !ref($content[0]) && $content[0] eq '') {
+		$new->delete_content;
+	}
+
+	$$old->replace_with($new);
 }
+
+#sub _filter_child {
+#	my ($self, $child) = @_;
+#
+#	debug "  filtering tag " . $child->tag . "\n";
+#	if ($self->{preserve_children}) {
+#		$self->sanitize_tree($_) for grep { ref } $child->content_list;
+#		$child->replace_with_content->delete;
+#		return 0;
+#	} 
+#	else {
+#		$child->delete;
+#		return 1;
+#	}
+#}
 
 sub sanitize_attributes {
 	my ($self, $child) = @_;
@@ -218,19 +299,42 @@ sub sanitize_attributes {
 		debug "    Checking attribute <$tag $attr>\n";
 
 		my $r;
-		$r = $self->{_rules}->{$tag}->{$attr} if ref $self->{_rules}->{$tag};
-		$r = $self->{_rules}->{$tag}->{"*"}  if !defined($r) && ref $self->{_rules}->{$tag};
-		$r = $self->{_rules}->{"_"}->{$attr} if !defined($r) && ref $self->{_rules}->{"_"};
-		$r = $self->{_rules}->{"_"}->{"*"}   if !defined($r) && ref $self->{_rules}->{"_"};
-		$r = $self->{_rules}->{"*"}->{$attr} if !defined($r) && ref $self->{_rules}->{"*"};
-		$r = $self->{_rules}->{"*"}->{"*"}   if !defined($r) && ref $self->{_rules}->{"*"};
+		ATTR_SEARCH: for my $o ($tag, "_", "*") {
+			if (ref $self->{_rules}->{$o}) {
+				for my $i ($attr, '*') {
+					if (exists($self->{_rules}->{$o}->{$i})) {
+						debug "      found match in $o/$i";
+						$r = $self->{_rules}->{$o}->{$i};
+						last ATTR_SEARCH;
+					}
+				}
+			}
+		}
+
+#		$r = $self->{_rules}->{$tag}->{$attr} if ref $self->{_rules}->{$tag};
+#		$r = $self->{_rules}->{$tag}->{"*"}   if !defined($r) && ref $self->{_rules}->{$tag};
+#		$r = $self->{_rules}->{"_"}->{$attr}  if !defined($r) && ref $self->{_rules}->{"_"};
+#		$r = $self->{_rules}->{"_"}->{"*"}    if !defined($r) && ref $self->{_rules}->{"_"};
+#		$r = $self->{_rules}->{"*"}->{$attr}  if !defined($r) && ref $self->{_rules}->{"*"};
+#		$r = $self->{_rules}->{"*"}->{"*"}    if !defined($r) && ref $self->{_rules}->{"*"};
 
 		if (ref($r) eq 'Regexp') {
 			$child->attr($attr, undef) unless $child->attr($attr) =~ /$r/;
-		} elsif (ref($r) eq 'CODE') {
+		} 
+
+		elsif (ref($r) eq 'CODE') {
 			debug "        code ref, attr $attr=" . $child->attr($attr) . "\n";
-			$child->attr($attr, undef) unless $r->($child, $attr, $child->attr($attr));
-		} elsif (!$r) {
+			local $_ = $child->attr($attr);
+			if ($r->($child, $attr, $child->attr($attr))) {
+				if ($_ ne $child->attr($attr)) {
+					$child->attr($attr, $_);
+				}
+			} else {
+				$child->attr($attr, undef);
+			}
+		} 
+
+		elsif (!$r) {
 			debug "    Stripping attribute\n";
 			$child->attr($attr, undef);
 		}
@@ -258,9 +362,10 @@ HTML::Sanitizer - HTML Sanitizer
 		src => qr/^(?:http|ftp):/,
 		alt => 1,
 	},
+        b => HTML::Element->new('strong'),
   );
 
-  $sanitized = $safe->filter_as_html_fragment($evil_html);
+  $sanitized = $safe->filter_html_fragment($evil_html);
 
   # or
 
@@ -269,10 +374,10 @@ HTML::Sanitizer - HTML Sanitizer
 
 =head1 ABSTRACT
 
-This module acts as a filter for HTML text.  It is not a validator,
-though it might be possible to write a validator-like tool with it.
-It's intended to strip out unwanted HTML elements and attributes and
-leave you with non-dangerous HTML code that you should be able to trust.
+This module acts as a filter for HTML.  It is not a validator, though it
+might be possible to write a validator-like tool with it.  It's intended
+to strip out unwanted HTML elements and attributes and leave you with
+non-dangerous HTML code that you should be able to trust.
 
 =head1 DESCRIPTION
 
@@ -298,10 +403,11 @@ See the section on L<RULE SETS> below to see how to construct a
 filter rule set.  An example might be:
 
   $safe = new HTML::Sanitizer(
-     strong => 1,			# allow strong, em and p
+     strong => 1,			# allow <strong>, <em> and <p>
      em => 1,
      p => 1,
      a => { href => qr/^http:/ },	# allow HTTP links
+     b => HTML::Element->new('strong'), # convert <b> to <strong>
      '*' => 0,				# disallow everything else
   );
 
@@ -320,26 +426,37 @@ validation requirements, if you still need them:
 
   $safe->permit( a => { href => qr/^http:/ }, 
                  blockquote => [ qw/ cite id / ], 
+                 b => HTML::Element->new('strong'),
                  qw/ strong em /);
 
 The value to each element should be an array, hash or code reference,
-since the '=> 1' is always implied otherwise.
+or an HTML::Element object, since the '=> 1' is always implied otherwise.
 
 =item permit_only(...)
 
 Like permit, but also assumes a default 'deny' policy.  This is
 equivalent to including this in your ruleset as passed to new():
 
-  '*' => 0
+  '*' => undef
+
+This will destroy any existing rule set in favor of the one you pass it.
+
+If you would rather use a default 'ignore' policy, you could do
+something like this:
+
+  $safe->permit_only(...);
+  $safe->ignore('*');
 
 =item deny(...)
 
 Like permit, but assumes each case will have a 'false' value by assuming a
-'=> 0' for each element that isn't followed by an array or code reference.
-You cannot pass a hash reference of attributes as a value to an element,
-as in permit.  You'll need to find some way to negate complex tests
-yourself and set them up through a call to permit() or define them in
-the initial rule set passed to new().
+'=> undef' for each element that isn't followed by an array reference.
+This will cause any elements matching these rules to be stripped from
+the document tree (along with any child elements).  You cannot pass
+a hash reference of attributes, a code reference or an HTML::Element
+object as a value to an element, as in permit.  If you need more complex
+validation requirements, follow up with a permit() call or define them
+in your call to new().
 
   $safe->deny( a => ['href'], qw/ img object embed script style /);
 
@@ -349,6 +466,19 @@ Like deny, but assumes a default 'permit' policy.  This is equivalent
 to including this in your ruleset:
 
   '*' => { '*' => 1 }	# allow all elements and all attributes
+
+This will destroy any existing rule set in favor of the one you pass it.
+
+=item ignore(...)
+
+Very similar to deny, this will cause a rule with an implied '=> 0' to
+be created for the elements passed.  Matching elements will be replaced
+with their child elements, with the element itself being removed from
+the document tree.
+
+=item ignore_only(...)
+
+Like ignore, but assumes a default 'permit' policy.  See 'deny_only'.
 
 =back
 
@@ -363,31 +493,25 @@ This WILL modify $tree.  This function is used by the filter functions
 below, so you don't have to deal with HTML::TreeParser unless you
 want to.
 
-=item filter_as_html($html)
+=item filter_html($html)
 
 Filters an HTML document using the configured rule set.
 
-=item filter_as_html_fragment($html)
+=item filter_html_fragment($html)
 
 Filters an HTML fragment.  Use this if you're filtering a chunk of
 HTML that you're going to end up using within an existing document.
 (In other words, it operates on $html as if it were a complete document,
 but only ends up working on children of the <body> tag.)
 
-=item filter_as_xml($xml)
+=item filter_xml($xml)
 
-=item filter_as_xml_fragment($xml)
+=item filter_xml_fragment($xml)
 
 Like above, but operates on the data as though it were well-formed XML.
 Use this if you intend on providing XHTML, for example.
 
 =back
-
-When the above functions encounter an element they're meant to filter,
-the entire element will be deleted, including children.  If you wish
-to preserve child elements, you can try setting this experimental flag:
-
-  $safe->{preserve_children} = 1;
 
 When the above functions encounter an attribute they're meant to filter,
 the attribute will be deleted from the element, but the element will
@@ -395,10 +519,7 @@ survive.  If you need to delete the entire element if an attribute
 doesn't pass validation, set up a coderef for the element in your rule
 set and use L<HTML::Element> methods to manipulate the element (e.g. by
 calling C<$element->delete> or C<$element->replace_with_content> if
-C<$element->attr('href')> doesn't pass muster.)  Be aware that using
-'replace_with_content' suffers from the problem documented with the
-'preserve_children' flag: child elements "promoted" in this fashion may
-not be filtered.  This is a bug.
+C<$element->attr('href')> doesn't pass muster.)
 
 =head1 RULE SETS
 
@@ -406,25 +527,85 @@ A rule set is simply a list of elements and/or attributes and values
 indicating whether those elements/attributes will be allowed, ignored,
 or stripped from the parse tree.  Generally rule sets should be passed
 to new() at object creation time, though they can also be built piecemeal
-through calls to permit and/or deny as described above.
+through calls to permit, deny and/or ignore as described above.
 
-Each element in the list can be followed either by a true/false value
-(true being equivalent to a 'permit' rule for the element, while a
-false value means 'deny'), a hashref with additional attribute rules,
-or a code reference (@_ = ($element)).
+Each element in the list should be followed by one of the following:
 
-If an element is followed by a hashref, the keys of the hashref will
-be attributes we wish to inspect.  The values of the hashref can either
-be true/false as above (to permit or strip the attribute), a regular
-expression (which must be true to allow the attribute to survive), or
-a code reference (@_ = ($element, $attr_name, $attr_value)).
+=over 4
+
+=item a 'true' value
+
+This indicates the element should be permitted as-is with no filtering
+or modification (aside from any other filtering done to child elements).
+
+=item 0
+
+If a zero (or some other defined, false value) is given, the element
+itself is deleted but child elements are brought up to replace it.
+Use this when you wish to filter a bad formatting tag while preserving
+the text it was formatting, for example.
+
+=item undef
+
+If an undef is given, the element and all of its children will be deleted.
+This would remove a scripting tag and all of its contents from the
+document tree, for example.
+
+=item an HTML::Element object
+
+A copy of this object will replace the element matching the rule.
+The attributes in the replacement object will overlay the attributes of
+the original object (after attribute filtering has been done through
+the _ rule).  If this element contains any child elements, they will
+replace the children of the element fitting the rule.  If you wish
+to delete the content without necessarily providing any replacement,
+create a child that's simply an empty text node.
+
+=item a code reference
+
+This would permit the element if, and only if, the coderef returned a
+true value.  The HTML::Element object in question is passed as the first
+and only argument.
+
+=item a hash reference
+
+This implies the element itself is OK, but that some additional checking
+of its attribute list is needed.  This hash reference should contain
+keys of attributes and values that in turn should be one of:
+
+=over 4
+
+=item a 'true' value
+
+This would preserve the attribute.
+
+=item a 'false' value
+
+This would delete the attribute.
+
+=item a regular expression
+
+This would preserve the attribute if the regular expression matched.
+
+=item a code reference
+
+This would permit the attribute if and only if the coderef returned
+a true value.  The HTML::Element object, the attribute name and
+attribute value are passed as arguments.  $_ is also set to the
+attribute value (which can be modified).
+
+=back 4
+
+=back 4
+
+=head2 EXAMPLES
 
 Here is a sample rule set, which might do a fair job at stripping out
 potentially dangerous tags, though I put this together without too much
 thought, so I wouldn't rely on it:
 
-  'script'          => 0,
-  'style'           => 0,
+  'script'          => undef,
+  'style'           => undef,
   '*'               => {
   	onclick     => 0,
   	ondblclick  => 0,
@@ -449,35 +630,24 @@ thought, so I wouldn't rely on it:
   	style       => 0,
   	href        => qr/^(?!(?:java)?script)/,
   	src         => qr/^(?!(?:java)?script)/,
-  	cite        => qr/^(?!(?:java)?script)/,
+  	cite        => sub { !/^(?:java)?script/ },  # same thing, mostly
   	'*'         => 1,
   },
   'link'            => {
   	rel         => sub { not_member("stylesheet", @_) },
   },
-  'object'          => 0,
-  'embed'           => 0,
-  'iframe'          => 0,
-  'frameset'        => 0,
-  'frame'           => 0,
-  'applet'          => 0
+  'object'          => 0,	# strip but let children show through
+  'embed'           => undef,
+  'iframe'          => undef,
+  'frameset'        => undef,
+  'frame'           => undef,
+  'applet'          => undef,
+  'noframes'        => 0,
+  'noscript'        => 0,
 
   # use a function like this to do some additional validation:
 
-  sub not_member {
-	my ($what, $element, $attribute, $value) = @_;
-	return $value !~ /\b$what\b/i;
-  }
-
-  # or maybe:
-
-  sub not_member {
-        my ($what, $element, $attribute, $value) = @_;
-        if ($value =~ s/\b$what\b//i) {
-            $element->attr($attribute, $value);
-        }
-        return 1;
-  }
+  sub not_member { !/\b\Q$_[0]\E\b/i; }	# maybe substitute it out instead
 
 A web site incorporating user posts might want something a little more
 strict:
@@ -493,17 +663,19 @@ strict:
   img          => 1,
   span         => 1,
   blockquote   => { cite => 1 },
-  _            => {
+  _            => {	 # for all tags above, these attribute rules apply:
       href     => qr/^(?:http|ftp|mailto|sip):/i,
       src      => qr/^(?:http|ftp|data):/i,
       title    => 1,
                   # Maybe add an x- prefix to all ID's to avoid collisions
-      id       => sub { $_[2] = "x-$_[2]"; $_[0]->attr($_[1], $_[2]); 1 },
+      id       => sub { $_ = "x-$_" },
       xml:lang => 1,
       lang     => 1,
       *        => 0,
   },
-  '*'          => 0
+  '*'          => 0,	 # everything else is 'ignored'
+  script       => undef, # except these, which are stripped along with children
+  style        => undef,
 
 Note the use of the _ element here, which is magic in that it allows you
 to set up some global attributes while still leaving the * element free
@@ -513,6 +685,18 @@ but they will not be applied to elements not present in the ruleset.
 
 Attribute rule precedence goes from the tag-specific, the special "_" tag
 and then the special "*" tag.
+
+The following might be a simple way to force a 'b' tag to become a
+'strong' tag, with the text within it surviving:
+
+  b => HTML::Element->new('strong');
+
+Here's how you might strip out a 'script' tag while letting the user
+know something is up:
+
+  script => HTML::Element
+	->new('p', class => 'script_warning')
+	->push_content("Warning: A <script> tag was removed!");
 
 =head1 OTHER CONSIDERATIONS
 
@@ -530,7 +714,8 @@ necessary.
 
 =over 4
 
-=item None at the moment.
+=item This release has no known bugs, but prior releases may have contained
+bugs that were fixed with this release.  See http://rt.cpan.org/ for details.
 
 =back
 

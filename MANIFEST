@@ -3,4 +3,6 @@ Makefile.PL
 MANIFEST
 README
 Sanitizer.pm
-t/1.t
+t/01rules.t
+t/02functions.t
+t/03security.t
