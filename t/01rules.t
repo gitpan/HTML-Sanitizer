@@ -155,6 +155,6 @@ $safe->ignore('*');
 
 # ----------------------------------------
 is(despace $safe->filter_xml_fragment(qq(
-	<p>content p</p><blockquote attr4="xyz bad_value xyz">content blockquote</blockquote>
+	<p>content p</p><blockquote attr4="xyz bad_value xyz">content <blockquote>blockquote</blockquote></blockquote>
 )),    '<p>content p</p>content blockquote',	"Unknown element should be removed with child elements promoted");
 

@@ -7,7 +7,7 @@ use Carp;
 use HTML::Entities;
 
 BEGIN {
-	our $VERSION = 0.03;
+	our $VERSION = 0.04;
 	use constant DEBUG => 0;
 
 	if (DEBUG) {
@@ -209,7 +209,8 @@ sub sanitize_tree {
 
 				else {
 					debug "  False rule found, bringing children up\n";
-					$self->sanitize_tree($_) for grep { ref } $$child->content_list;
+					$self->sanitize_tree($$child);
+#					$self->sanitize_tree($_) for grep { ref } $$child->content_list;
 					$$child->replace_with_content->delete;
 				} 
 			} 
@@ -233,7 +234,8 @@ sub sanitize_tree {
 
 				else {
 					debug "  False default rule found, bringing children up\n";
-					$self->sanitize_tree($_) for grep { ref } $$child->content_list;
+					$self->sanitize_tree($$child);
+#					$self->sanitize_tree($_) for grep { ref } $$child->content_list;
 					$$child->replace_with_content->delete;
 				} 
 			}

@@ -20,3 +20,7 @@ Revision history for Perl extension HTML::Sanitizer.
 	- documentation fixes
 	- added support for HTML::Element element replacements
 	- allowed attribute subroutines access to the attr's value in $_
+
+0.04
+	- fixed security issue with nested evil tags not being properly
+		filtered
