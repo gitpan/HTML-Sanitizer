@@ -4,3 +4,12 @@ Revision history for Perl extension HTML::Sanitizer.
 	- original version; created by h2xs 1.22 with options
 		-Xn HTML::Sanitizer
 
+0.02
+	- cpan#2404: removed spurious requirement for Perl 5.8
+	- cpan#2405 and #2406: better documentation for permit and deny
+		arguments
+	- cpan#2993: documentation fix for XSS problem in examples
+	- cpan#2992: XSS problem with partial HTML tags in text nodes 
+		corrected with HTML::Entities within all text nodes
+	- "preserve_children" flag should work as expected now, with
+		no caveats

@@ -4,8 +4,9 @@ use HTML::TreeBuilder;
 use strict;
 use warnings;
 use Carp;
+use HTML::Entities;
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 use constant DEBUG => 0;
 
@@ -155,39 +156,41 @@ sub sanitize_tree {
 
 	debug "      tree=$tree\n";
 
-	foreach my $child ($tree->content_list) {
-		if (ref($child)) {
-			my $tag = lc $child->tag;
+	foreach my $child ($tree->content_refs_list) {
+		if (ref($$child)) {
+			my $tag = lc $$child->tag;
 			debug "Examining tag $tag\n";
 
 			if ($rules->{$tag}) {
 				debug "  Tag has a rule\n";
 
-				$self->sanitize_attributes($child);
+				$self->sanitize_attributes($$child);
 				if (ref($rules->{$tag}) eq 'CODE') {
-					unless ($rules->{$tag}->($child)) {
-						next if $self->_filter_child($child);
+					unless ($rules->{$tag}->($$child)) {
+						next if $self->_filter_child($$child);
 					}
 				}
 
 			} elsif ($rules->{'*'}) {
 				debug "  Tag has no rule, but there's a default rule\n";
 
-				$self->sanitize_attributes($child);
+				$self->sanitize_attributes($$child);
 				if (ref($rules->{'*'}) eq 'CODE') {
-					unless ($rules->{'*'}->($child)) {
-						next if $self->_filter_child($child);
+					unless ($rules->{'*'}->($$child)) {
+						next if $self->_filter_child($$child);
 					}
 				}
 
 			} else {
 				debug "  No rule found, defaulting to deny\n";
-				next if $self->_filter_child($child);
+				next if $self->_filter_child($$child);
 			}
 
 			debug "  $tag is ok\n";	
 				
-			$self->sanitize_tree($child) if $child;
+			$self->sanitize_tree($$child) if $child;
+		} else {
+			$$child = encode_entities($$child);
 		}
 	}
 }
@@ -197,6 +200,7 @@ sub _filter_child {
 
 	debug "  filtering tag " . $child->tag . "\n";
 	if ($self->{preserve_children}) {
+		$self->sanitize_tree($_) for grep { ref } $child->content_list;
 		$child->replace_with_content->delete;
 		return 0;
 	} else {
@@ -247,11 +251,11 @@ HTML::Sanitizer - HTML Sanitizer
   $safe->permit_only(
 	qw/ strong em /,
 	a => {
-		href => qr/^http:|ftp:/,
+		href => qr/^(?:http|ftp):/,
 		title => 1,
 	},
 	img => {
-		src => qr/^http:|ftp:/,
+		src => qr/^(?:http|ftp):/,
 		alt => 1,
 	},
   );
@@ -291,13 +295,21 @@ Alternatively, a ruleset can be built piecemeal using the permit/deny
 methods described below.
 
 See the section on L<RULE SETS> below to see how to construct a
-filter rule set.
+filter rule set.  An example might be:
+
+  $safe = new HTML::Sanitizer(
+     strong => 1,			# allow strong, em and p
+     em => 1,
+     p => 1,
+     a => { href => qr/^http:/ },	# allow HTTP links
+     '*' => 0,				# disallow everything else
+  );
 
 =item permit(...)
 
-Accepts a list of rulesets and assumes each rule will have a true
+Accepts a list of rules and assumes each rule will have a true
 value.  This allows you to be a little less verbose, since your
-rule sets can look like this instead:
+rule sets can look like this instead of a large data structure:
 
   $safe->permit( qw/ strong em i b br / );
 
@@ -310,16 +322,24 @@ validation requirements, if you still need them:
                  blockquote => [ qw/ cite id / ], 
                  qw/ strong em /);
 
+The value to each element should be an array, hash or code reference,
+since the '=> 1' is always implied otherwise.
+
 =item permit_only(...)
 
 Like permit, but also assumes a default 'deny' policy.  This is
-equivalent to including this in your ruleset:
+equivalent to including this in your ruleset as passed to new():
 
   '*' => 0
 
 =item deny(...)
 
-Like permit, but fills in the gaps with false values.
+Like permit, but assumes each case will have a 'false' value by assuming a
+'=> 0' for each element that isn't followed by an array or code reference.
+You cannot pass a hash reference of attributes as a value to an element,
+as in permit.  You'll need to find some way to negate complex tests
+yourself and set them up through a call to permit() or define them in
+the initial rule set passed to new().
 
   $safe->deny( a => ['href'], qw/ img object embed script style /);
 
@@ -365,16 +385,28 @@ Use this if you intend on providing XHTML, for example.
 
 When the above functions encounter an element they're meant to filter,
 the entire element will be deleted, including children.  If you wish
-to preserve child elements, you can try setting this experimental flag,
-but at the moment I make no promises that child nodes will be filtered:
+to preserve child elements, you can try setting this experimental flag:
 
   $safe->{preserve_children} = 1;
+
+When the above functions encounter an attribute they're meant to filter,
+the attribute will be deleted from the element, but the element will
+survive.  If you need to delete the entire element if an attribute
+doesn't pass validation, set up a coderef for the element in your rule
+set and use L<HTML::Element> methods to manipulate the element (e.g. by
+calling C<$element->delete> or C<$element->replace_with_content> if
+C<$element->attr('href')> doesn't pass muster.)  Be aware that using
+'replace_with_content' suffers from the problem documented with the
+'preserve_children' flag: child elements "promoted" in this fashion may
+not be filtered.  This is a bug.
 
 =head1 RULE SETS
 
 A rule set is simply a list of elements and/or attributes and values
-indicating whether those elements/attributes will be allowed,
-ignored, or stripped from the parse tree.
+indicating whether those elements/attributes will be allowed, ignored,
+or stripped from the parse tree.  Generally rule sets should be passed
+to new() at object creation time, though they can also be built piecemeal
+through calls to permit and/or deny as described above.
 
 Each element in the list can be followed either by a true/false value
 (true being equivalent to a 'permit' rule for the element, while a
@@ -498,9 +530,7 @@ necessary.
 
 =over 4
 
-=item The "preserve_children" flag may not allow for the filtering of
-"preserved" child elements, since we're changing the content_list of
-the parent element after we've started iterating over it.
+=item None at the moment.
 
 =back
 

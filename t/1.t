@@ -3,7 +3,7 @@
 
 #########################
 
-use Test::More tests => 7;
+use Test::More tests => 9;
 BEGIN { use_ok('HTML::Sanitizer') };
 
 #########################
@@ -53,5 +53,14 @@ $safe->permit_only('*' => { id => \&valid_test });
 is($safe->filter_as_xml_fragment("<p id='ok_value'>OK</p><p id='bad_value'>BAD</p>"),
 	"<p id=\"ok_value\">OK</p>\n<p>BAD</p>\n", "coderef filters");
 
+# CPAN#2992
+is($safe->filter_as_html_fragment("<img src='javascript:alert(1)'"), "&lt;img src='javascript:alert(1)'",
+	"HTML entities");
+
 # I hate writing tests.
 
+$safe->permit_only(qw/ strong em /);
+$safe->{preserve_children} = 1;
+
+ok($safe->filter_as_html_fragment("<p>One<em>Two<strong>Three</strong>Four<x>-and-a-half</x></p>Five") =~
+	m!One<em>Two<strong>Three</strong>Four-and-a-half</em>\s*Five!, "Filtering of preserved children");
